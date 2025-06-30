@@ -1,0 +1,1134 @@
+---
+title: "Rivadavia_Chagas"
+author: "MPF"
+date: "2024-08-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this guide, we will walk through the analysis of a dataset from Rivadavia.
+
+-   **Loading the Dataset**: Initial step to load and summarize the dataset.
+-   **Data Preprocessing**: Handling missing values, converting variables, and preparing the data for analysis.
+-   **Subsetting the Data**: Focusing on specific cases within the dataset.
+-   **Visualization**: Creating stacked bar plots to understand categorical variables.
+-   **Cross-Tabulations**: Exploring relationships between categorical variables.
+-   **Logistic Regression**: Fitting a model to predict the outcome variable and interpreting the results.
+-   **Visualization of Predictions**: Understanding the model's predictions through visualization.
+-   **Conclusion**: Summarizing the entire analysis and highlighting key insights.
+
+This R Markdown file will generate a comprehensive HTML report that details each step of your analysis, including discussions that explain the purpose and findings of each chunk of code. If you have further requirements or specific points you'd like to focus on, feel free to ask!
+
+### Load data and packages
+
+```{r load-data}
+
+# Clear the workspace
+rm(list=ls())
+
+#load packages needed
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(missMDA)
+library(cluster)
+library(vcd)
+library(logistf)
+library(MuMIn)
+library(Hmisc)
+
+# Disable scientific notation globally
+options(scipen = 999)
+
+# Load the dataset
+db <- read.csv(here::here("dbrivadavia.csv"))
+```
+
+### Pre-process data
+
+```{r pre-processing}
+
+# Remove rows with missing values(NA) in the first column
+db <- subset(db, !is.na(db[,1]))
+
+# List of categorical variables
+cat_vars <- c("ID",
+              "Block",
+              "Unit",
+              "STATUS",
+              "INF",
+              "SITE",
+              "SPR",
+              "wall_material",
+              "wall_covering",
+              "roof_material",
+              "roof_covering",
+              "watertank",
+              "watertank_pigeon",
+              "palm",
+              "objects",
+              "insecticide",
+              "commercial",
+              "permethrin",
+              "other",
+              "travel_rural",
+              "dwelling_status",
+              "chicken_coop",
+              "rats",
+              "idcerca_NE",
+              "idcerca_NW",
+              "idcerca_S")
+
+# Convert categorical variables to factors
+db[cat_vars] <- lapply(db[cat_vars], as.factor)
+
+# Convert the Date column from character to Date
+db$DATE <- as.Date(db$DATE, format = "%d/%m/%Y")
+db$SPR.DATE <- as.Date(db$SPR.DATE, format = "%d/%m/%Y")
+
+#subset database to select only houses that have been inspected for triatomine infestations (EV)
+
+dbEV <- subset(db,db$STATUS == "EV")
+```
+
+### Descriptive analyses
+
+First, we visualize the categorical explanatory variables againts the infested status of the household (INF)
+
+```{r cat-viz}
+# Function to create stacked bar plots and ignore NAs
+create_stacked_bar_plot <- function(data, categorical_var, target_var) {
+  # Remove rows with NA in the current categorical variable
+  data <- data[!is.na(data[[categorical_var]]), ]
+  
+  ggplot(data, aes_string(x = target_var, fill = categorical_var)) +
+    geom_bar(position = "fill") +
+    scale_y_continuous(labels = scales::percent_format()) +
+    labs(y = NULL, fill = categorical_var, x = "Infestation") +
+    theme_minimal() +
+    theme(legend.position = "none",
+              plot.title = element_text(size = 8),
+              axis.title.x = element_text(size = 8),
+              axis.title.y = element_text(size = 8),
+              axis.text.x = element_text(size = 7),
+              axis.text.y = element_text(size = 7)
+            ) +
+    ggtitle(categorical_var)
+}
+
+# Create list of categorical variables to visualize
+categorical_vars <- setdiff(cat_vars, c(
+                            "ID",
+                            "Block",
+                            "Unit",
+                            "STATUS",
+                            "INF",
+                            "SITE",
+                            "SPR",
+                            "education_level",
+                            "employer",
+                            "employee",
+                            "selfemployed",
+                            "housework",
+                            "not.employed",
+                            "pension",
+                            "benefit",
+                            "health",
+                            "idcerca_NE",
+                            "idcerca_NW",
+                            "idcerca_S"))
+
+# Create a list to store the plots
+cat_plots <- list()
+
+# Convert INF variable to a factor with labels "NO" and "YES"
+dbEV$INF_label <- factor(dbEV$INF, levels = c(0, 1), labels = c("NO", "YES"))
+
+# Create plots for each remaining categorical variable and store in the list
+for (var in categorical_vars) {
+  cat_plots[[var]] <- create_stacked_bar_plot(dbEV, var, "INF_label")
+}
+
+# Arrange the plots in a 4x4 grid
+grid.arrange(grobs = cat_plots, ncol = 4, nrow = 4)
+
+# Initialize an empty data frame to store results
+contingency_results <- data.frame(Variable = character(),
+                                  Category = character(),
+                                  No_Infestation = numeric(),
+                                  Yes_Infestation = numeric(),
+                                  stringsAsFactors = FALSE)
+
+# Perform Fisher's exact test and calculate proportions for each categorical variable
+for (var in categorical_vars) {
+  # Create a contingency table
+  contingency_table <- table(dbEV[[var]], dbEV$INF)
+  
+  # Calculate proportions
+  prop_table <- prop.table(contingency_table, margin = 2)
+  
+  # Store results with proportions
+  for (level in rownames(contingency_table)) {
+    contingency_results <- rbind(contingency_results, data.frame(
+      Variable = var,
+      Category = level,
+      No_Infestation = prop_table[level, "0"],
+      Yes_Infestation = prop_table[level, "1"]
+    ))
+  }
+}
+
+# Format and display the results as a table
+contingency_results %>%
+  mutate(No_Infestation = scales::percent(No_Infestation, accuracy = 0.1),
+         Yes_Infestation = scales::percent(Yes_Infestation, accuracy = 0.1)) %>%
+  kable("html", col.names = c("Variable", "Category", "No Infestation", "Yes Infestation"), align = "c") %>%
+  kable_styling(full_width = FALSE, position = "left", 
+                bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, color = "black") %>%
+  column_spec(2, color = "black") %>%
+  column_spec(3, color = "black") %>%
+  column_spec(4, color = "black") %>%
+  row_spec(0, bold = TRUE, color = "black")
+```
+
+We perform Fisher's exact test for each categorical variable to check for significant associations with the `INF` variable.
+
+```{r fishers-exact-test, message = FALSE, warning = FALSE}
+
+# Initialize an empty data frame to store results
+fisher_results <- data.frame(Variable = character(),
+                             p_value = numeric(),
+                             stringsAsFactors = FALSE)
+
+# Perform Fisher's exact test for each categorical variable
+for (var in categorical_vars) {
+  test_result <- fisher.test(table(dbEV[[var]], dbEV$INF))
+  fisher_results <- rbind(fisher_results, data.frame(Variable = var, p_value = test_result$p.value))
+}
+
+# Display the results
+fisher_results <- fisher_results %>%
+  mutate(Significance = case_when(
+    p_value < 0.001 ~ "***",
+    p_value < 0.01 ~ "**",
+    p_value < 0.05 ~ "*",
+    TRUE ~ ""
+  ))
+
+# Format and display the results as a table
+fisher_results %>%
+  mutate(p_value = formatC(p_value, format = "f", digits = 4)) %>%
+  kable("html", col.names = c("Variable", "P-value", "Significance"), align = "c") %>%
+  kable_styling(full_width = FALSE, position = "left", 
+                bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, color = "black") %>%
+  column_spec(2, color = "black") %>%
+  column_spec(3, bold = TRUE, color = "red") %>%
+   row_spec(which(fisher_results$Significance != ""), bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "black")
+```
+
+Next, we visualize the numeric explanatory variables against the infested status of the household (INF)
+
+```{r num-viz}
+
+# Function to create violin plots with jittered points
+create_violin_plot <- function(data, numeric_var, target_var) {
+  # Remove rows with NA in the current numeric variable
+  data <- data[!is.na(data[[numeric_var]]), ]
+  
+  ggplot(data, aes_string(x = target_var, y = numeric_var, fill = target_var)) +
+    geom_violin(trim = FALSE) +
+    geom_jitter(width = 0.2, size = 0.6, alpha = 0.6) +
+    labs(y = numeric_var, fill = target_var, x = target_var) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 8),
+      axis.title.x = element_text(size = 8),
+      axis.title.y = element_text(size = 8),
+      axis.text.x = element_text(size = 7),
+      axis.text.y = element_text(size = 7)
+    ) +
+    ggtitle(numeric_var)
+}
+
+# Create list of numeric variables to visualize
+numeric_var <- c("dog_num",
+                 "cat_num",
+                 "chicken_num",
+                 "other_num",
+                 "dist_lum",
+                 "num_lum_50m",
+                 "num_lum_100m",
+                 "dist.infest",
+                 "dist_NW",
+                 "dist_S",
+                 "num_infest_50m",
+                 "num_infest_100m",
+                 "num_S",
+                 "num_S_infest_50m",
+                 "num_S_infest_100m",
+                 "num_NW",
+                 "num_NW_infest_50m",
+                 "num_NW_infest_100m",
+                 "percent_green_50",
+                 "percent_green_100")
+
+
+# Create a list to store the plots
+num_plots <- list()
+
+# Create plots for each numeric variable and store in the list
+for (var in numeric_var) {
+  num_plots[[var]] <- create_violin_plot(dbEV, var, "INF")
+}
+
+# Arrange the plots in a 4x4 grid
+grid.arrange(grobs = num_plots, ncol = 5, nrow = 4)
+```
+
+We perform non-parametric Wilcox test for each numerical variable to check for significant associations with the `INF` variable.
+
+```{r animals-test}
+# Initialize an empty data frame to store results
+results <- data.frame(Variable = character(),
+                      p_value = numeric(),
+                      stringsAsFactors = FALSE)
+
+# Perform Mann-Whitney test for each numeric variable
+for (var in numeric_var) {
+  test_result <- wilcox.test(dbEV[[var]] ~ dbEV$INF, data = dbEV)
+  results <- rbind(results, data.frame(Variable = var, p_value = test_result$p.value))
+}
+
+# Display the results
+results <- results %>%
+  mutate(Significance = case_when(
+    p_value < 0.001 ~ "***",
+    p_value < 0.01 ~ "**",
+    p_value < 0.05 ~ "*",
+    TRUE ~ ""
+  ))
+
+# Format p-values to four decimal places
+results$p_value <- formatC(results$p_value, format = "f", digits = 4)
+
+# Format the table for Word document
+results %>%
+  kable("html", col.names = c("Variable", "P-value", "Significance"), align = "c") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, color = "black") %>%
+  column_spec(2, color = "black") %>%
+  column_spec(3, bold = TRUE, color = "red") %>%
+  row_spec(which(results$Significance != ""), bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "black")
+```
+
+### Animal host variables.
+
+We first explore the need to create new summary variable for animal hosts. As a first step, we did a correlation matrix with the number of animal hosts.
+
+```{r animals}
+  # Extract numeric variables related to animals
+  animal_vars <- c("dog_num", "cat_num", "chicken_num", "other_num")
+  
+  # Compute the Spearman correlation matrix with significance
+  library(Hmisc)
+  cor_res <- rcorr(as.matrix(dbEV[animal_vars]), type = "spearman")
+  
+  # Extract the correlation coefficients and p-values
+  cor_matrix <- cor_res$r
+  p_matrix <- cor_res$P
+  
+  # Set the diagonal elements of both matrices to NA
+  diag(cor_matrix) <- NA
+  diag(p_matrix) <- NA
+  
+  # Format the matrices with three decimal places and no scientific notation
+  formatted_cor_matrix <- formatC(cor_matrix, format = "f", digits = 3)
+  formatted_p_matrix <- formatC(p_matrix, format = "f", digits = 3)
+  
+    # Convert matrices to data frames for better kable formatting
+  cor_df <- as.data.frame(formatted_cor_matrix)
+  p_df <- as.data.frame(formatted_p_matrix)
+  
+  # Create row and column names for clarity
+  rownames(cor_df) <- colnames(cor_df) <- animal_vars
+  rownames(p_df) <- colnames(p_df) <- animal_vars
+  
+  # Print the correlation matrix using kable
+  kable(cor_df, caption = "Spearman Correlation Matrix", align = "c") %>%
+    kable_styling(full_width = FALSE, position = "left", 
+                  bootstrap_options = c("striped", "hover", "condensed")) %>%
+        column_spec(1:ncol(cor_df), color = "black") %>%  
+    row_spec(0, color = "black", bold = TRUE)
+  
+  # Print the p-value matrix using kable
+  kable(p_df, caption = "P-Value Matrix for Spearman Correlations", align = "c") %>%
+    kable_styling(full_width = FALSE, position = "left", 
+                  bootstrap_options = c("striped", "hover", "condensed")) %>%
+    column_spec(1:ncol(cor_df), color = "black") %>%  
+    row_spec(0, color = "black", bold = TRUE)        
+  
+
+  # Visualize the correlation matrix without the diagonal elements
+  corrplot(cor_matrix, method = "circle", na.label = " ")
+```
+
+Next we did a factor analysis of mixed data (FAMD) to include numeric and catergorical variables (presence of rats). We didn't include presence of pigeons in water tanks since none of the infested houses had them.
+
+```{r FAMD-animals}
+  
+# Extract the relevant variables, including categorical variables
+  famd_vars <- c("dog_num", "cat_num", "chicken_num", "other_num", "rats")
+  
+  # Ensure the categorical variables are factors
+  dbEV[famd_vars] <- lapply(dbEV[famd_vars], function(x) if(is.character(x)) as.factor(x) else x)
+  
+  # Impute missing values using imputeFAMD
+  imputed_data <- imputeFAMD(dbEV[famd_vars], ncp = 4) #ncp is the number of dimensions to use for imputation
+  
+  # Perform FAMD on the imputed dataset
+  famd_res <- FAMD(imputed_data$completeObs, ncp = 4, graph = FALSE)
+  
+  # Print the summary of FAMD results
+  summary(famd_res)
+```
+
+Visualize the FAMD results
+
+```{r FAMD-viz, warning=FALSE}
+  # Visualize the FAMD results in the first 2 dimensions
+    fviz_famd_var(famd_res, repel = TRUE) + 
+    labs(title = "Variables factor map")
+  
+  # Visualize the contributions of quantitative variables
+  fviz_famd_var(famd_res, choice = "quanti.var", repel = TRUE) + 
+    labs(title = "Quantitative Variables factor map")
+  
+  # Modify INF labels to be more descriptive
+  dbEV$INF_label <- factor(dbEV$INF, levels = c(0, 1), labels = c("Not Infested", "Infested"))
+
+  # Visualize the FAMD results with individuals grouped by infestation status
+
+  fviz_famd(famd_res, 
+               habillage = dbEV$INF_label,        # Use descriptive labels for coloring
+               palette = c("blue", "red"),        # Custom colors: "Not Infested" (blue), "Infested" (red)
+               repel = TRUE,                      # Avoid overlapping text labels
+               addEllipses = TRUE,                # Add confidence ellipses
+               label = "none") +                  # Disable individual labels
+  labs(title = "FAMD - Individuals grouped by infestation", 
+       color = "Infestation Status", fill = "Infestation Status") +  # Set a single legend title
+  theme(legend.position = "right") 
+```
+
+Explore the use of PCA for the animal hosts using the numeric variables only
+
+```{r PCA-animals}
+
+  # Extract the quantitative variables for PCA
+  quant_vars <- c("dog_num", "cat_num", "chicken_num", "other_num")
+  quant_data <- dbEV[quant_vars]
+  
+  # Ensure the data does not contain NA values
+  quant_data <- na.omit(quant_data)
+  
+  # Perform PCA
+  pca_res <- prcomp(quant_data, scale. = TRUE)
+  
+  # Print summary of PCA results
+  summary(pca_res)
+  
+  # Extract the quantitative variables for PCA
+quant_vars <- c("dog_num", "cat_num", "chicken_num", "other_num")
+quant_data <- dbEV[quant_vars]
+
+# Impute missing values using missMDA's PCA-based method
+# Estimate the number of dimensions to keep for imputation
+ncp <- estim_ncpPCA(quant_data, scale = TRUE)$ncp
+
+# Perform the imputation
+imputed_data <- imputePCA(quant_data, ncp = ncp, scale = TRUE)$completeObs
+
+# Perform PCA on the imputed data
+pca_res <- prcomp(imputed_data, scale. = TRUE)
+
+# Print summary of PCA results
+summary(pca_res)
+
+# Extract PCA coordinates (Principal Components)
+pca_coords <- as.data.frame(pca_res$x)
+
+# Rename the columns for clarity (e.g., PCA_Dim1, PCA_Dim2, etc.)
+colnames(pca_coords) <- paste0("PCA_animal_Dim", 1:ncol(pca_coords))
+
+# Add PCA dimensions back to the original dataset
+dbEV <- cbind(dbEV, pca_coords)
+```
+
+Visualize the PCA results and evaluate association with infestation
+
+```{r PCA-viz}
+  # Plot variables
+  fviz_pca_var(pca_res, repel = TRUE) +
+    labs(title = "PCA - Variables")
+    
+  # Plot individuals with custom colors and descriptive labels in the legend
+  fviz_pca_ind(pca_res, 
+                    geom.ind = "point",               # Plot individuals as points
+                    habillage = dbEV$INF_label,       # Use descriptive labels for coloring
+                    addEllipses = TRUE,               # Add confidence ellipses
+                    palette = c("blue", "red"),       # Custom colors: "Not Infested" (blue), "Infested" (red)
+                    legend.title = "Infestation Status", # Set a single legend title
+                    label = "none") +                 # Disable individual labels
+    scale_color_manual(values = c("Not Infested" = "blue", "Infested" = "red")) +  # Ensure consistent color mapping
+    theme(legend.position = "right")                # Position legend on the right
+
+  # Define all variables for Mann-Whitney U tests
+  all_vars <- c(colnames(pca_coords))
+  # Remove variables containing "NA"
+  all_vars <- subset(all_vars, !is.na(all_vars))
+  
+  # Initialize an empty data frame to store results
+  results <- data.frame(Variable = character(),
+                        p_value = numeric(),
+                        Significance = character(),
+                        stringsAsFactors = FALSE)
+  
+  # Perform Mann-Whitney test for each variable
+  for (var in all_vars) {
+    test_result <- wilcox.test(dbEV[[var]] ~ dbEV$INF, data = dbEV)
+    results <- rbind(results, data.frame(Variable = var, 
+                                         p_value = formatC(test_result$p.value, format = "f", digits = 4), 
+                                         Significance = ifelse(test_result$p.value < 0.05, ifelse(test_result$p.value < 0.01, ifelse(test_result$p.value < 0.001, "***", "**"), "*"), "")))
+  }
+  
+  # Format p-values to four decimal places
+results$p_value <- formatC(results$p_value, format = "f", digits = 4)
+
+# Format the table for Word document
+results %>%
+  kable("html", col.names = c("Variable", "P-value", "Significance"), align = "c") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover", "condensed")) %>%
+  column_spec(1, color = "black") %>%
+  column_spec(2, color = "black") %>%
+  column_spec(3, bold = TRUE, color = "red") %>%
+  row_spec(which(results$Significance != ""), bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "black")
+
+```
+
+The PCA is slightly better (explains more variance so we will proceed that). The first two dimensions of the PCA that explain 31.6% and 26.3%, respectively. The first dimension separates the households with a larger number of animal hosts and the second dimension distinguishes those in particular that have a larger number of chickens and other animals, not just companion animals (dogs and cats). The third dimension is associated with the number of chicken. Since we have 4 dimensions in total (given that we have 4 variables), the first two dimensions explain \~50%, and there is a significant correlation between the numbers of dogs and cats, the animal host variables selected for the infestation models were the number of dogs and the number of chickens. However, we will also try the PCA dim 1 in the model as an alternative to the total number of animal hosts.
+
+### House construction variables
+
+We used cluster analyses to build "house type" variable based on the construction materials (roof and wall materials and characteristics). We first did a multiple correspondence analyses (MCA), to sumarize the categorical variables in orthogonal numeric variables to be used in the cluster analyses.
+
+```{r house-MCA}
+
+  # Define the variables related to house type
+  house_vars <- c("wall_material", "wall_covering", "roof_material", "roof_covering")
+  
+  # Ensure the variables are treated as factors
+  dbEV[house_vars] <- lapply(dbEV[house_vars], as.factor)
+  
+  # Impute missing values
+  imputed_data <- imputeMCA(dbEV[house_vars], ncp = 3)
+  
+  # Perform Multiple Correspondence Analysis (MCA) on imputed data
+  mca_res <- MCA(imputed_data$completeObs, graph = TRUE)
+  
+  # Extract MCA coordinates for individuals
+  mca_coords <- as.data.frame(mca_res$ind$coord)
+  colnames(mca_coords) <- paste0("MCA_Dim", 1:ncol(mca_coords))
+  
+  # Combine the original data frame with the MCA results
+  dbEV <- cbind(dbEV, mca_coords)
+  
+  # Create a scree plot to visualize the variance explained by each dimension
+fviz_screeplot(mca_res, addlabels = TRUE, ylim = c(0, 100)) +
+  labs(title = "Scree Plot - Variance Explained by Each MCA Dimension", 
+       x = "Dimensions", y = "Percentage of Variance Explained")
+```
+
+We then performed a hierarchical clustering analyses with the first 5 dimensions (\~77% of the variance)
+
+```{r MCA-viz}
+  
+  # Perform hierarchical clustering
+  diss_matrix <- daisy(mca_coords, metric = "euclidean")
+  hc_res <- hclust(diss_matrix, method = "ward.D2")
+  
+  # Plot the dendrogram
+  plot(hc_res, labels = FALSE, main = "Hierarchical Clustering Dendrogram")
+  
+  # Cut the dendrogram to obtain 3 clusters
+  clusters <- cutree(hc_res, k = 3)
+  
+  # Create a table summarizing the clusters
+  cluster_table <- data.frame(Cluster = clusters, dbEV[house_vars])
+  print("Cluster summary table:")
+  print(table(cluster_table$Cluster))
+
+  # Add the cluster assignments as a new categorical variable to dbEV
+  dbEV$house_type <- as.factor(clusters)
+```
+
+Next, we visualized the clusters (type of house) based on the MCA variables, and charectized the clusters based on the construction characteristics of the houses.
+
+```{r MCA-viz-house}
+  # Plot the individuals colored by house_type
+  fviz_mca_ind(mca_res, 
+               label = "none",         # Hide individual labels
+               habillage = dbEV$house_type,   # Color by house_type
+               addEllipses = TRUE,     # Add confidence ellipses
+               ellipse.level = 0.95,   # Confidence level
+               palette = "jco")        # Color palette
+  
+  # Plot the variables
+  fviz_mca_var(mca_res, 
+               repel = TRUE,           # Avoid text overlapping
+               col.var = "black")      # Color of variables
+  
+  # Plot a biplot showing both individuals and variables colored by house_type
+  fviz_mca_biplot(mca_res, 
+                  repel = TRUE,        # Avoid text overlapping
+                  col.var = "black",   # Color of variables
+                  habillage = dbEV$house_type, # Color by house_type
+                  palette = "jco")     # Color palette
+
+  # Create stacked bar plots for each house variable without NAs
+  plot_list <- lapply(house_vars, function(var) {
+    ggplot(na.omit(dbEV[, c(var, "house_type")]), aes_string(x = var, fill = "house_type")) +
+      geom_bar(position = "fill") +
+      labs(y = "Proportion", fill = "House Type") +
+      theme_minimal() +
+      ggtitle(paste("Distribution of", var))
+  })
+  
+  # Arrange the plots in a grid
+  do.call(grid.arrange, c(plot_list, ncol = 2))
+  
+  # Create stacked bar plots for each house variable with house_type on the x-axis and without NAs
+  plot_list <- lapply(house_vars, function(var) {
+    ggplot(na.omit(dbEV[, c(var, "house_type")]), aes_string(x = "house_type", fill = var)) +
+      geom_bar(position = "fill") +
+      labs(y = "Proportion", fill = var) +
+      theme_minimal() +
+      ggtitle(paste("Distribution of", var, "by House Type"))
+  })
+  
+  # Arrange the plots in a grid
+  do.call(grid.arrange, c(plot_list, ncol = 2))
+```
+
+Hacer: aca escribir las caracteristicas de las casas y caracterizar los clusters
+
+### Socio-demographic variables
+
+```{r social-var}
+# Define the additional variables for MCA
+  additional_vars <- c("education_level", "pension", "benefit", "health")
+  
+  # Recode health category 4 as 3, and specify .default to handle other values
+  dbEV$health <- recode(as.numeric(dbEV$health), `4` = 2, `3` = 2, .default = as.numeric(dbEV$health))
+  
+  # Recode education_level categories 4 and 5 as 3, and specify .default to handle other values
+  dbEV$education_level <- recode(as.numeric(dbEV$education_level), `4` = 3, `5` = 3, .default = as.numeric(dbEV$education_level))
+
+  # Create the income_work variable
+  dbEV$income_work <- with(dbEV, ifelse(employer == 1 | employee == 1 | selfemployed == 1, "income_work", 
+                                        ifelse(housework == 1 | not.employed == 1, "not_income_work", NA)))
+  
+  # Ensure the variables are treated as factors
+  dbEV[additional_vars] <- lapply(dbEV[additional_vars], as.factor)
+  dbEV$income_work <- as.factor(dbEV$income_work)
+  
+  # Create frequency tables for each variable
+health_table <- as.data.frame(table(dbEV$health))
+education_table <- as.data.frame(table(dbEV$education_level))
+benefit_table <- as.data.frame(table(dbEV$benefit))
+pension_table <- as.data.frame(table(dbEV$pension))
+income_work_table <- as.data.frame(table(dbEV$income_work))
+
+# Rename columns for clarity
+colnames(health_table) <- c("Category", "Health_Freq")
+colnames(education_table) <- c("Category", "Education_Freq")
+colnames(benefit_table) <- c("Category", "Benefit_Freq")
+colnames(pension_table) <- c("Category", "Pension_Freq")
+colnames(income_work_table) <- c("Category", "Income_Work_Freq")
+
+# Merge the tables by "Category" with all data included (full join)
+combined_table <- Reduce(function(x, y) merge(x, y, by = "Category", all = TRUE),
+                         list(health_table, education_table, benefit_table, pension_table, income_work_table))
+
+# Display the combined table using kable
+kable(combined_table, caption = "Frequency Tables for Health, Education Level, Benefit, Pension, and Income Work", align = "c") %>%
+  kable_styling(full_width = FALSE, position = "left", 
+                bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(0, bold = TRUE, color = "black") %>%    
+  column_spec(1:ncol(combined_table), color = "black")
+
+```
+
+Next, we did an MCA with the categorical variables to summarize the socio-demographic variables
+
+```{r social-MCA}
+  # Combine income_work with additional variables for MCA
+  mca_vars <- c(additional_vars, "income_work")
+  
+  # Check for missing values in the combined data
+  missing_values <- sapply(dbEV[mca_vars], function(x) sum(is.na(x)))
+  print("Missing values in each variable:")
+  print(missing_values)
+  
+  # Impute missing values
+  imputed_data <- imputeMCA(dbEV[mca_vars], ncp = 3)
+  
+  # Perform Multiple Correspondence Analysis (MCA) on imputed data
+  mca_res <- MCA(imputed_data$completeObs, graph = TRUE)
+  
+ # Extract MCA coordinates for individuals
+  mca_coords <- as.data.frame(mca_res$ind$coord)
+  colnames(mca_coords) <- paste0("MCA_SEE_Dim", 1:ncol(mca_coords))
+  
+  # Combine the original data frame with the MCA results
+  dbEV <- cbind(dbEV, mca_coords)
+
+```
+
+We then visualized the results of the MCA in more detail.
+
+```{r MCA-viz-social}
+
+  # Visualize the contribution of variables to the first dimension
+  fviz_contrib(mca_res, choice = "var", axes = 1, top = 10)
+  
+  # Visualize the contribution of variables to the second dimension
+  fviz_contrib(mca_res, choice = "var", axes = 2, top = 10)
+
+  # Visualize the biplot of the MCA results
+  fviz_mca_biplot(mca_res, 
+                  repel = TRUE,        # Avoid text overlapping
+                  col.var = "black",   # Color of variables
+                  habillage = "none", # Color by income_work
+                  palette = "jco",     # Color palette
+                  addEllipses = FALSE,  # Add confidence ellipses
+                  ellipse.level = 0.95) # Confidence level
+  
+  # Get the variance explained by each dimension
+  eigenvalues <- mca_res$eig
+  print("Eigenvalues and variance explained by each dimension:")
+  print(eigenvalues)
+
+```
+
+We then performed a hierarchical cluster of the households based on the first 4 dimensions (\~60% of the variance).
+
+```{r social-cluster}
+  # Extract the first three dimensions of the MCA coordinates for individuals
+  mca_coords <- as.data.frame(mca_res$ind$coord[, 1:3])
+  colnames(mca_coords) <- paste0("MCA_SEE_Dim", 1:3)
+  
+  # Perform hierarchical clustering on the first three dimensions
+  diss_matrix <- dist(mca_coords)  # Compute dissimilarity matrix
+  hc_res <- hclust(diss_matrix, method = "ward.D2")
+  
+  # Plot the dendrogram
+  plot(hc_res, labels = FALSE, main = "Hierarchical Clustering Dendrogram")
+  
+  # Cut the dendrogram to obtain clusters (e.g., 3 clusters)
+  num_clusters <- 3
+  clusters <- cutree(hc_res, k = num_clusters)
+  
+  # Add the cluster results back to the original data frame
+  dbEV$SEE <- as.factor(clusters)
+  table(dbEV$SEE)
+```
+
+Finally, we visualized the clusters based on the MCA results for interpretation
+
+```{r MCA-viz-social2}
+  # Visualize the biplot of the MCA results with clusters
+  fviz_mca_biplot(mca_res, 
+                  repel = TRUE,        # Avoid text overlapping
+                  col.var = "black",   # Color of variables
+                  habillage = dbEV$SEE, # Color by clusters
+                  palette = "jco",     # Color palette
+                  addEllipses = TRUE,  # Add confidence ellipses
+                  ellipse.level = 0.95) # Confidence level
+  
+    # Create stacked bar plots for each house variable without NAs
+  plot_list <- lapply(mca_vars, function(var) {
+    ggplot(na.omit(dbEV[, c(var, "SEE")]), aes_string(x = var, fill = "SEE")) +
+      geom_bar(position = "fill") +
+      labs(y = "Proportion", fill = "SEE") +
+      theme_minimal() +
+      ggtitle(paste("Distribution of", var))
+  })
+  
+  # Arrange the plots in a grid
+    do.call(grid.arrange, c(plot_list, ncol = 2))
+  
+  # Create stacked bar plots for each house variable with house_type on the x-axis and without NAs
+  plot_list <- lapply(mca_vars, function(var) {
+    ggplot(na.omit(dbEV[, c(var, "SEE")]), aes_string(x = "SEE", fill = var)) +
+      geom_bar(position = "fill") +
+      labs(y = "Proportion", fill = var) +
+      theme_minimal() +
+      ggtitle(paste("Distribution of", var, "by SEE"))
+  })
+  
+  # Arrange the plots in a grid
+    do.call(grid.arrange, c(plot_list, ncol = 2))
+```
+
+Hacer: interpretacion de SEE - cambiar SEE por SES
+
+### Association between dwelling status and SES
+
+```{r SES-comp1}
+  
+  dbEV$dwelling_status <- as.factor(dbEV$dwelling_status)
+  
+  # Create a contingency table between the cluster (SEE) and dwelling_status
+  contingency_table <- table(SEE = dbEV$SEE, DwellingStatus = dbEV$dwelling_status)
+  
+  # Print the contingency table with variable titles and margins
+  print("Contingency Table:")
+  contingency_table_with_margins <- addmargins(contingency_table)
+  print(ftable(contingency_table_with_margins))
+  
+  # Perform the chi-square test of independence
+  chisq_test <- chisq.test(contingency_table)
+  
+  # Print the results of the chi-square test
+  print("Chi-square Test Results:")
+  print(chisq_test)
+  
+  # Convert the contingency table to a data frame for ggplot2
+  contingency_df <- as.data.frame(contingency_table)
+  colnames(contingency_df) <- c("SEE", "DwellingStatus", "Count")
+  
+  # Create a bar plot of the proportions
+  ggplot(contingency_df, aes(x = SEE, y = Count, fill = DwellingStatus)) +
+    geom_bar(stat = "identity", position = "fill") +
+    scale_y_continuous(labels = scales::percent_format()) +
+    labs(y = "Proportion", x = "Socio-Economic Status (SEE)", fill = "Dwelling Status") +
+    ggtitle("Proportions of Dwelling Status within SEE Groups") +
+    theme_minimal()
+  
+# Create a mosaic plot of the contingency table
+  mosaic(~SEE + DwellingStatus, data = contingency_table,
+         shade = TRUE, legend = TRUE,
+         main = "Mosaic Plot of Dwelling Status by SEE")
+```
+
+### Association between house type status and SES
+
+```{r SES-comp2}
+
+  dbEV$house_type <- as.factor(dbEV$house_type)
+  
+  # Create a contingency table between the cluster (SEE) and dwelling_status
+  contingency_table <- table(SEE = dbEV$SEE, HouseType = dbEV$house_type)
+  
+  # Print the contingency table with variable titles and margins
+  print("Contingency Table:")
+  contingency_table_with_margins <- addmargins(contingency_table)
+  print(ftable(contingency_table_with_margins))
+  
+  # Perform the chi-square test of independence
+  chisq_test <- chisq.test(contingency_table)
+  
+  # Print the results of the chi-square test
+  print("Chi-square Test Results:")
+  print(chisq_test)
+
+  # Convert the contingency table to a data frame for ggplot2
+  contingency_df <- as.data.frame(contingency_table)
+  colnames(contingency_df) <- c("SEE", "HouseType", "Count")
+  
+  # Create a bar plot of the proportions
+  ggplot(contingency_df, aes(x = SEE, y = Count, fill = HouseType)) +
+    geom_bar(stat = "identity", position = "fill") +
+    scale_y_continuous(labels = scales::percent_format()) +
+    labs(y = "Proportion", x = "Socio-Economic Status (SEE)", fill = "HouseType") +
+    ggtitle("Proportions of House Type within SEE Groups") +
+    theme_minimal()
+  
+  # Create a mosaic plot of the contingency table
+  mosaic(~SEE + HouseType, data = contingency_table,
+         shade = TRUE, legend = TRUE,
+         main = "Mosaic Plot of House Type by SEE")
+```
+
+### Association between insecticide use and SES
+
+```{r SES-comp3}
+  dbEV$insecticide <- as.factor(dbEV$insecticide)
+  
+  # Create a contingency table between the cluster (SEE) and dwelling_status
+  contingency_table <- table(SEE = dbEV$SEE, Insecticide = dbEV$insecticide)
+  
+  # Print the contingency table with variable titles and margins
+  print("Contingency Table:")
+  contingency_table_with_margins <- addmargins(contingency_table)
+  print(ftable(contingency_table_with_margins))
+  
+  # Perform the chi-square test of independence
+  chisq_test <- chisq.test(contingency_table)
+  
+  # Print the results of the chi-square test
+  print("Chi-square Test Results:")
+  print(chisq_test)
+  
+  # Convert the contingency table to a data frame for ggplot2
+  contingency_df <- as.data.frame(contingency_table)
+  colnames(contingency_df) <- c("SEE", "Insecticide", "Count")
+  
+  # Create a bar plot of the proportions
+  ggplot(contingency_df, aes(x = SEE, y = Count, fill = Insecticide)) +
+    geom_bar(stat = "identity", position = "fill") +
+    scale_y_continuous(labels = scales::percent_format()) +
+    labs(y = "Proportion", x = "Socio-Economic Status (SEE)", fill = "Insecticide") +
+    ggtitle("Proportions of House Type within SEE Groups") +
+    theme_minimal()
+  
+  # Create a mosaic plot of the contingency table
+  mosaic(~SEE + Insecticide, data = contingency_table,
+         shade = TRUE, legend = TRUE,
+         main = "Mosaic Plot of Insecticide use by SEE")
+```
+
+### Infestation models
+
+Lastly, we conducted 3 models to evaluate infestation status:
+
+1.  Infestation vs. socio-demographic and housing variables.
+
+```{r exp-model1}
+# Define the additional categorical variables 
+  categorical_var <- c("SEE", "house_type")
+  
+  # Initialize an empty data frame to store results
+  results_chisq <- data.frame(Variable = character(),
+                              p_value = numeric(),
+                              stringsAsFactors = FALSE)
+  
+  # Perform Chi-square test for each categorical variable
+  for (var in categorical_var) {
+    # Remove rows with NA values in the specific variables
+    valid_data <- dbEV %>% select(all_of(var), INF) %>% na.omit()
+    
+    # Create contingency table
+    contingency_table <- table(valid_data[[var]], valid_data$INF)
+    
+    # Perform chi-square test
+    test_result <- chisq.test(contingency_table)
+    
+    # Store results
+    results_chisq <- rbind(results_chisq, data.frame(Variable = var, p_value = test_result$p.value))
+  }
+  
+  # Display the results
+  results_chisq <- results_chisq %>%
+    mutate(Significance = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01 ~ "**",
+      p_value < 0.05 ~ "*",
+      TRUE ~ ""
+    ))
+  
+  # Format p-values to four decimal places
+  results_chisq$p_value <- formatC(results_chisq$p_value, format = "f", digits = 4)
+  
+  # Format the table for Word document
+  formatted_table_chisq <- results_chisq %>%
+    kable("html", col.names = c("Variable", "P-value", "Significance"), align = "c") %>%
+    kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover", "condensed")) %>%
+    column_spec(1, bold = TRUE, color = "black") %>%  
+    column_spec(2, color = "black") %>%               
+    column_spec(3, bold = TRUE, color = "black") %>%  
+    row_spec(0, color = "black", bold = TRUE)   
+  
+  
+  # Print the formatted table
+  formatted_table_chisq
+```
+
+The SES and house type variables were not associated to infestation status of the house. Next, we ran the model
+
+```{r model1}
+  #select variables
+  dbEV_mod1 <- select(dbEV, INF, SEE, house_type, chicken_coop, objects, chicken_num, dog_num, wall_covering, roof_covering, PCA_animal_Dim1)
+  
+ #Model 1a: with the number of dogs and the presence of chicken coop (instead of the number of chicken)
+  dbEV_mod1$house_type <- relevel(factor(dbEV_mod1$house_type), ref = "2")
+  fit1<-logistf(data = dbEV_mod1, INF ~ house_type + chicken_coop + objects + dog_num, control = logistf.control(maxit = 10000, maxstep = 1), na.action = na.omit)
+  summary(fit1)
+  
+  #Model 1b: with the PCAdim1 to indicate the number of total animal hosts instead of the number of dogs.  
+  fit1b<-logistf(data = dbEV_mod1, INF ~ house_type + chicken_coop + objects + PCA_animal_Dim1, control = logistf.control(maxit = 10000, maxstep = 1), na.action = na.omit)
+  summary(fit1b)
+  
+    #Model 1c: this model replaces the house type with wall and roof covering which were signifficant in the bivariate analyses.  
+  fit1c<-logistf(data = dbEV_mod1, INF ~ wall_covering + roof_covering + chicken_coop + objects + PCA_animal_Dim1, control = logistf.control(maxit = 10000, maxstep = 1), na.action = na.omit)
+  summary(fit1c)
+  
+  # Calculate the AIC for both models
+  aic_fit1 <- AIC(fit1)
+  aic_fit1b <- AIC(fit1b)
+  aic_fit1c <- AIC(fit1c)
+  
+
+  # Print the AIC values
+  print(paste("AIC for Model 1a (with dog_num):", aic_fit1))
+  print(paste("AIC for Model 1b (with PCA_animal_Dim1):", aic_fit1b))
+  print(paste("AIC for Model 1c (with wall/roof covering):", aic_fit1c))
+ 
+  # Note: VIF computation with logistf is not directly supported, 
+  # so we use a standard logistic regression model to compute VIF
+  # Fit a standard logistic regression model for VIF calculation
+  fit_standard <- glm(INF ~ wall_covering + roof_covering + chicken_coop + objects + dog_num, 
+                      data = dbEV_mod1, 
+                      family = binomial, 
+                      na.action = na.omit)
+  
+  # Compute VIF using the car package
+  vif_values <- car::vif(fit_standard)
+  
+  # Display the VIF values
+  print(vif_values)
+  
+  #Multi-model inference and model averaging
+  dbEV_mod1 <- select(dbEV, INF, chicken_coop, objects, wall_covering, roof_covering, PCA_animal_Dim1)
+  dbEV_mod1 <- dbEV_mod1[complete.cases(dbEV_mod1), ]
+  table(dbEV$INF)
+  
+  fit1c<-logistf(data = dbEV_mod1, INF ~ wall_covering + roof_covering + chicken_coop + objects + PCA_animal_Dim1, control = logistf.control(maxit = 10000, maxstep = 1), na.action = na.fail)
+  
+  summary(fit1c)
+  MMI <- dredge(fit1c)
+  MMI
+  write.table(MMI, "clipboard", sep="\t")
+  
+  MAS <- model.avg(MMI)
+  summary(MAS)
+  sw(MAS)
+  
+  #Coefficients and confidence intervals
+  ci<-confint(MAS)
+  
+  # Extracting p-values from the summary of the conditional average model
+  summary_MAS <- summary(MAS)
+  pval <- summary_MAS$coefmat.subset[, "Pr(>|z|)"]
+  
+  # Combining OR, CI, and p-values into a table
+  table.coef <- cbind(exp(cbind (OR=coef(MAS),ci)),pval)
+  print(table.coef, digits = 3)
+  write.table(table.coef, "clipboard", sep="\t")
+  
+```
+
+Of all the models (1a-1c), the model including wall and roof covering instead of house type had a smaller AIC. However, when performing model averaging, only the presence of chicken coop was significantly associated to infestation and there are 10 models within 2 delta AIC including the null model, indicating that the model is not robust and there is still significant variance not solely explained by the presence of chicken coops.
+
+2.  Infestation vs. spacial variables.
+
+```{r model2}
+
+  dbEV_mod2 <- select(dbEV, INF, dist_lum, num_S_infest_50m, num_S_infest_100m, dist.infest)
+  dbEV_mod2 <- dbEV_mod2[complete.cases(dbEV_mod2), ]
+  
+  fit2<-logistf(data=dbEV_mod2, INF ~ dist_lum + num_S_infest_100m, control = logistf.control(maxit = 10000, maxstep = 1), na.action = na.fail)
+  summary(fit2)
+  
+  # Fit a standard logistic regression model for VIF calculation
+  fit_standard <- glm(INF ~ dist_lum + num_S_infest_50m + num_S_infest_100m + dist.infest, 
+                      data = dbEV_mod2, 
+                      family = binomial, 
+                      na.action = na.fail)
+  
+  # Compute VIF using the car package
+  vif_values <- car::vif(fit_standard)
+  
+  # Display the VIF values
+  print(vif_values)
+  
+
+  # Extract confidence intervals
+  ci <- confint(fit2)
+
+  # Extract odds ratios (OR)
+  or <- exp(coef(fit2))
+  
+  # Extract p-values
+  p_values <- fit2$prob
+  
+  # Combine OR, confidence intervals, and p-values into one table
+  table.coef <- cbind(OR = or, ci, P.value = p_values)
+  
+  # Print the table with specified number of digits
+  print(table.coef, format = "f", digits = 3)
+  
+ # Convert the table to a data frame for better handling
+  table.coef <- as.data.frame(table.coef)
+
+  # Print the formatted table
+  print(table.coef)
+  
+  # Optionally, write the table to the clipboard
+  write.table(table.coef, "clipboard", sep = "\t", col.names = NA, row.names = TRUE)
+```
+
+From the bivariate analyses, we decided to include the distance to street lights, the number of infested houses to the South within 50 and 100m radius and the distance to the nearest infested house. Because of multicollinearity between the last thre variables, we decided to continue only with the number of infested houses within 100m to the South.
+
+3.Combined model
+
+```{r model3}
+#Modelo espacial
+  
+  dbEV_mod3 <- select(dbEV, INF, chicken_coop, objects, wall_covering, roof_covering, PCA_animal_Dim1, num_S_infest_100m, dist_lum)
+  dbEV_mod3 <- dbEV_mod3[complete.cases(dbEV_mod3), ]
+  
+  fit3<-logistf(data=dbEV_mod3, INF ~ wall_covering + roof_covering + chicken_coop + num_S_infest_100m, control = logistf.control(maxit = 10000, maxstep = 1), na.action = na.fail)
+  summary(fit3)
+  
+  #Coefficients and confidence intervals
+  ci<-confint(fit3)
+  table.coef <- exp(cbind (OR=coef(fit3),ci))
+  print(table.coef, digits = 3)
+  write.table(table.coef, "clipboard", sep="\t")
+  
+  MMI <- dredge(fit3)
+  MMI
+  write.table(MMI, "clipboard", sep="\t")
+  
+  MAS <- model.avg(MMI)
+  summary(MAS)
+  sw(MAS)
+  
+  #Coefficients and confidence intervals
+  ci<-confint(MAS)
+  
+  # Extracting p-values from the summary of the conditional average model
+  summary_MAS <- summary(MAS)
+  pval <- summary_MAS$coefmat.subset[, "Pr(>|z|)"]
+  
+  # Combining OR, CI, and p-values into a table
+  table.coef <- cbind(exp(cbind (OR=coef(MAS),ci)),pval)
+  print(table.coef, digits = 3)
+  write.table(table.coef, "clipboard", sep="\t")
+```
